@@ -1,0 +1,369 @@
+---
+layout: post
+title: IPSec 笔记
+date: 2019-03-23
+tags: Ikev1
+---
+
+=====
+####加密术语：
+
+* 对称加密：相同的密钥加密和解密，常见的算法：DES(56)，3DES, AES.
+* 非对称加密：公钥算法；公钥加密，私钥解密；安全性高，但是速度较慢；
+
+公钥加密的另一个用途是用于验证消息，这也被称为数字签名；使用私钥对消息进行加密将创建一个数字签名，这是一种电子验证方式，提供了不可抵赖性；换句话说数字签名不仅证明了消息的内容，还证明了发送方的身份。由于对实际消息进行加密致使认证的效率通常很低，因此使用被称为消息摘要的文档散列值。消息摘要的基本思想是，将变长的消息转换成为定长的压缩输出------信息摘要；
+
+大体过程： Alice将要发送给Bob的消息进行hash，得到一个单向散列值，Alice使用其私钥对散列值进行加密，加密后的消息摘要变成了数字签名；Alice将文档和数字签名一块发给Bob，Bob使用Alice的公钥对数字签名进行解密，同时计算从Alice收到的文档的单向散列值；如果两个值相同，Bob便能确定文档来自Alice且在传输过程中没有被改过；
+
+====
+IPSec是一套安全协议，或者说是一个大的框架；旨在网络层为IP分组提供安全服务，这些服务包括访问控制，数据完整性，身份验证，防止重放和数据机密性；
+
+#### IPSec的两种模式：
+
+* 传输模式
+
+	```
+	原始数据包格式
+	----------------------------
+	|orig IP hdr  |     |      |
+	|(any options)| TCP | Data |
+	----------------------------
+	
+	应用了AH之后
+	-------------------------------------------------------
+	|original IP hdr (any options) | AH | TCP |    Data   |
+	-------------------------------------------------------
+	|<- mutable field processing ->|<- immutable fields ->|
+	|<----- authenticated except for mutable fields ----->|
+	
+	应用了ESP之后
+    -------------------------------------------------
+    |orig IP hdr  | ESP |     |      |   ESP   | ESP|
+    |(any options)| Hdr | TCP | Data | Trailer | ICV|
+    -------------------------------------------------
+                        |<---- encryption ---->|
+                  |<-------- integrity ------->|
+	
+	```
+
+
+* 隧道模式
+
+	```
+	原始数据包格式
+	----------------------------
+	|orig IP hdr  |     |      |
+	|(any options)| TCP | Data |
+	----------------------------
+	
+	应用了AH之后
+	--------------------------------------------------------------
+	|                              |    | orig IP hdr*  |   |      |
+	|new IP header * (any options) | AH | (any options) |TCP| Data |
+	----------------------------------------------------------------
+	|<- mutable field processing ->|<------ immutable fields ----->|
+	|<- authenticated except for mutable fields in the new IP hdr->|
+	
+	应用了ESP之后
+	-----------------------------------------------------------
+   | new IP hdr* |     | orig IP hdr*  |   |    | ESP   | ESP|
+   |(any options)| ESP | (any options) |TCP|Data|Trailer| ICV|
+   -----------------------------------------------------------
+                       |<--------- encryption --------->|
+                 |<------------- integrity ------------>|
+
+	```
+
+
+#### ESP数据包格式
+
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ ----
+|               Security Parameters Index (SPI)                 | ^Int.
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ |Cov-
+|                      Sequence Number                          | |ered
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ | ----
+|                    Payload Data* (variable)                   | |   ^
+~                                                               ~ |   |
+|                                                               | |Conf.
++               +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ |Cov-
+|               |     Padding (0-255 bytes)                     | |ered*
++-+-+-+-+-+-+-+-+               +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ |   |
+|                               |  Pad Length   | Next Header   | v   v
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ ------
+|         Integrity Check Value-ICV   (variable)                |
+~                                                               ~
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+
+封装安全有效负载ESP：
+
+1. 提供了机密性，数据完整性以及可选的数据来源验证和反重放服务；
+2. ESP报头被插入到IP报头和上层协议报头之间；ESP报头重的安全参数索引（SPI）是一个32位的值，它同前面的IP报头重的目标地址和协议一起指出了用于处理分组的安全关联（SA）。
+3. SPI是目标对等体在Internet密钥交换（IKE）协商期间随意选择的一个数字。其功能有点类似于索引号，用于在安全关联数据库(SADB)中查找SA。
+4. 序列号是由发送方插入到ESP报头中的，唯一的单调底层数字；序列号和接受滑动窗口一起提供了反重放服务；这种反重放保护机制是ESP和AH通用的；
+5. 被保护的数据（具体地说是被ESP加密的数据）位于有效负载数据字段中。
+6. ESP报头中的填充字段用于增加ESP报头的位数，填充的位数取决于使用的加密算法；
+7. 填充长度字段指出了填充的字节数，以便解密时能够恢复原始数据；
+8. 下一个报头指出了有效负载中的数据类型；比如如果在隧道模式下使用ESP，这个值为4；
+9. 验证摘要用于验证数据完整性。由于验证总是在加密后进行的，因此收到分组后先检查数据的有效性，然后再解密；
+
+
+#### AH数据包格式
+
+```
+  0                   1                   2                   3
+  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+| Next Header   |  Payload Len  |          RESERVED             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                 Security Parameters Index (SPI)               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                    Sequence Number Field                      |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                Integrity Check Value-ICV (variable)           |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+验证报头AH
+
+1. 提供无连接完整性，数据验证和可选的反重放保护，不同于ESP，它不提供机密性。因此其报头比ESP报头简单的多；
+2. AH是一种IP协议，在IP报头中用51表示；
+3. 下一个报头字段指出AH报头后面是什么内容，在传输模式下，这是被保护的上层协议(如UDP或TCP)的编号；在隧道模式下，这个值为4；
+4. 有效负载长度字段指出来AH报头的长度。
+5. 保留字段未被使用，因此被设置为0.
+6. SPI和序列号的作用于ESP中的相同；
+7. 验证摘要同ESP有一个重要的不同：在AH中，对IP报头和有效负载进行验证。由于AH根据包括IP报头在内的整个分组计算验证数据，而有些IP报头和有效负载在传输过程中发生变化，因此计算验证摘要时要把IP报头中的传输过程中发生变化的字段排除在外，这些字段包括ToS，标记，分段偏移，存活时间TTL和报头校验和。之所以这样是因为验证在传输过程中被修改的值如TTL变化将导致验证散列值于发送方的不同，进而导致分组被丢弃；
+
+
+#### 密钥管理
+生成，分发和存储密钥统称为密钥管理。所有加密系统都必须处理密钥管理问题。默认情况下，IPSec使用Internet密钥交换（IKE）协议来安全地协商密钥；IKE用于系统相互验证以创建IPSec安全关联；
+
+#### Diffie-Hellman密钥交换
+
+1. DH算法在1976年出生，以离散数学为基础； https://www.ietf.org/rfc/rfc2631.txt
+2. 简单地说： Alice相同Bob安全地通信，为此，Alice和Bob需要确定一个会话密钥，但他们必须要以某种方式通过不安全的公共戒指协商一个共享密钥, 通过DH可以协商出这个密钥；
+3. 该算法有两个参数： p和g，这两个参数都是公开的，因此可被系统中所有的用户使用。参数p是一个大型素数，参数g是一个比p小的证书，对于1和p-1之间任何一个数，都可以通过将g自乘特定的次数再对素数p求模得到；
+4.Alice生成一个随机私有值a，而Bob生成随机私有值b，然后他们使用参数p和g以及他们的私有值推导出公开值X=ga modp, Bob的公开值Y=gb mod p, 然后他们交换公开值. 最后Alice使用(gb)a mod p计算出Kab, 而Bob使用公式(ga)b mod p计算出Kba。 由于Kab=Kba=K, 因此Alice和Bob有共享密钥k。
+
+#### 安全关联及IKE工作原理
+1. 安全关联被称为SA，它是IPSec的一个基本部件。SA是SA数据库(SADB)中的一个条目，SADB包含双方协商的IKE或IPsec安全信息。SA分两种:
+   * IKE/ISAKMP SA
+   * IPSec SA
+2. 在对等体之间只有一个IKE SA，他的生命通常比IPSec SA长。
+3. IPSec SA用于协商对对等体之间的IP数据流进行加密的算法，对哪些数据流进行加密；IPSec SA是单向的，因此至少需要两个：一个用于入站数据流，另一个用于出站数据流；在对等体之间可以有多对IPSec SA，用于描述不同的IP主机组或IP数据流。
+4. 确定和维护ISAKMP/IKE和IPSec SA是IKE协议的一项重要功能。
+5. IKE分两个阶段运行，以确定这些IKE和IPSec SA。
+   Phase1: 让IKE对等体彼此验证对方并确定回话密钥。这个间断使用DH交换，cookie和ID交换创建一个ISAKMP/IKE SA. 确定好ISAKMP SA后，发送方和应答方之间的所有IKE通信豆浆通过加密，完整性检查进行保护。phase 1旨在帮助在对等体之间建立一条安全通道，以便phase2协商能够安全的进行；
+   Phase2: 使用ESP或AH来保护IP数据流，以协商并确定IPSec SA。
+6. ISAKMP和IKE，他们之间是有区别的。ISAKMP规定了IPSec对等体之间如何通信，对等体之间交换的消息的结构，以及对等体建立连接时经过的状态变换，同时它也提供了验证对等体和交换密钥的方法。然而，他并没有规定如何交换验证密钥，但IKE对此做了规定；
+
+#### ISAKMP报头
+
+```
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!                          Initiator                            !
+!                            Cookie                             !
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!                          Responder                            !
+!                            Cookie                             !
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!  Next Payload ! MjVer ! MnVer ! Exchange Type !     Flags     !
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!                          Message ID                           !
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!                            Length                             !
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+1. IKE消息是通过将ISAKMP有效负载链接到ISAKMP报头构建而成的。报头中的发起方和应答方cookie是由各个对等体创建的，它们于消息ID一道决定了正在进行的ISAKMP交换的状态。
+2. Cookie是一个长8字节的随机值，用于标示IKE SA。 Cookie是通过计算对等体身份(IP, Port Protocol)，本地生成的秘密数字，日志和时间的散列值得到的，用作一种ISAKMP SPI。
+3. 下一有效负载字段指出来紧跟在报头后面的ISAKMP有效负载。
+4. ISAKMP版本由字段“主版本”和“次版本”指出。
+5. 交换类型指出了使用的消息类型。
+6. 标记字段长一个字节，其中只有从最右边开始的三位被使用，第0位为加密位，值为1时表示有效负载是加密的； 第1位为提交位，如果为1，将确保建立SA之后才能收到加密的内容。第二位为验证位，如果为1，将支队有效负载进行验证，而不进行加密。
+7. 长度字段为4字节，指出来整条消息的总长度，这包括报头和有效负载； 参见RFC2408.
+
+====IKEv1 Phase1
+
+ * **HDR**: ISAKMP头部
+ * **HDR***: 表明payload已经加密
+ * **\<P>_b**: indicates the body of payload \<P> -- the ISAKMP generic payload is not included.
+ * **SA**: SA negotiation payload with one or more proposals.
+ * **KE(X/Y)**: is the key exchange payload which contains the public information exchanged in a Diffie-Hellman exchange.
+ * **Nx**: is the nonce payload; x can be: i or r for the ISAKMP initiator and responder respectively.  A randomly generated number.
+ * **IDx**: is the identification payload for "x".  x can be: "ii" or "ir" for the ISAKMP initiator and responder respectively. Identification Data (variable length) - Value, as indicated by the Identification Type.  The length of the Identification Data is computed from the size in the ID payload header.
+ * **prf(key, msg)**: is the keyed pseudo-random function -- often a keyed hash function -- used to generate a deterministic output that appears pseudo-random.
+ * **CKY-I and CKY-R**:  are the Initiator's cookie and the Responder's cookie, respectively, from the ISAKMP header.
+ * **g^xi and g^xr**:  are the Diffie-Hellman ([DH]) public values of the initiator and responder respectively.
+ * **SKEYID**: is a string derived from secret material known only to the active players in the exchange.
+ 
+   ```
+   SKEYID = prf(pre-shared-key, Ni_b | Nr_b)
+   ```
+  
+ * **SKEYID_e**: is the keying material used by the ISAKMP SA to protect the confidentiality of its messages.
+ 
+   ```
+   ** SKEYID_e = prf(SKEYID, SKEYID_a | g^xy | CKY-I | CKY-R | 2)
+   ```
+   
+ * **SKEYID_a** is the keying material used by the ISAKMP SA to authenticate its messages.
+
+   ```
+   SKEYID_a = prf(SKEYID, SKEYID_d | g^xy | CKY-I | CKY-R | 1)
+   ```
+   
+ * **SKEYID_d**: is the keying material used to derive keys for non-ISAKMP security associations.
+   
+   ```
+   # g^xy is the Diffie-Hellman shared secret, 即Kab=Kba.
+   SKEYID_d = prf(SKEYID, g^xy | CKY-I | CKY-R | 0)  
+   ```
+   
+ * **SAi_b**: is the entire body of the SA payload (minus the ISAKMP generic header)-- i.e. the DOI, situation, all proposals and all transforms offered by the Initiator.
+ * **HASH**: (and any derivitive such as HASH(2) or HASH_I) is the hash payload. 
+ 
+	```
+	 # The contents of the hash are specific to the authentication method.
+	 HASH_I = prf(SKEYID, g^xi | g^xr | CKY-I | CKY-R | SAi_b | IDii_b )
+	 HASH_R = prf(SKEYID, g^xr | g^xi | CKY-R | CKY-I | SAi_b | IDir_b )
+	 # https://tools.ietf.org/html/rfc2409
+	```
+======Main Mode:
+
+```
+
+   Initiator                        Responder
+  ----------                       -----------
+   HDR, SA             -->
+                       <--    HDR, SA
+   HDR, KE, Ni         -->
+                       <--    HDR, KE, Nr
+   HDR*, IDii, HASH_I  -->
+                       <--    HDR*, IDir, HASH_R
+ ˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜
+   Ci, SAi             -->
+                       <--    Ci, Cr, SAr
+   Ci, Cr, X, Ni       -->
+                       <--    Ci, Cr, Y, Nr
+   Ci, Cr, IDi, HASHi  -->
+                       <--    Ci, Cr, IDr, HASHr
+```
+
+ * 第一个包：发送方发送一个包含cooike Ci的ISAKMP报头和一个SA有效负载(SAi)，SAi用于交流各种Phase1参数(加密算法，散列函数，验证方法，Lifetime等)。
+ * 第二个包：应答方用选定提议的参数和SA报头(SAr)以及包含cookie Cr的ISAKMP报头进行应答。应答方选择一种匹配的提议并将其返回，如果没有匹配的协议，应答方将发送notification payload。
+ * 第三个包：发送方发送自己推导出来的公开值和随机生成的Nonce.
+ * 第四个包：应答方发送自己推导出来的公开值和随机生成的Nonce。这个包完成之后，双方各自推导出来四个Key。 「 SKEYlD， SKEYlDa, SKEYlDe, SKEYlDd 」
+ 
+  ```
+  SKEYID = prf(pre-shared-key, Ni_b | Nr_b)
+  SKEYID_d = prf(SKEYID, g^xy | CKY-I | CKY-R | 0)
+  SKEYID_a = prf(SKEYID, SKEYID_d | g^xy | CKY-I | CKY-R | 1)
+  SKEYID_e = prf(SKEYID, SKEYID_a | g^xy | CKY-I | CKY-R | 2)
+  ```
+ 
+ * 第五/六个包：将使用SKEYIDe进行加密，使用SKEYIDa进行验证，这两次交换的主要内容是发送方和应答方的身份IDi 和IDr。由于ID有效负载被加密，应答方不知道与谁在交流。因此在使用预共享密钥的主模式中，只能根据发送方的源IP地址来确定其身份；
+ 
+ ```
+    # IPSec Design:
+    HASHi = hash(SKEYID, X|Y|Ci|Cr|SAr|IDi)
+    HASHr = hash(SKEYID, X|Y|Cr|Ci|SAi|IDr)
+    
+    # RFC 2409
+    HASH_I = prf(SKEYID, g^xi | g^xr | CKY-I | CKY-R | SAi_b | IDii_b )
+    HASH_R = prf(SKEYID, g^xr | g^xi | CKY-R | CKY-I | SAi_b | IDir_b )
+ ```
+ 
+#### Aggressive mode:
+
+```
+
+  Initiator                        Responder
+ -----------                      -----------
+  HDR, SA, KE, Ni, IDii -->
+                        <--    HDR, SA, KE, Nr, IDir, HASH_R
+  HDR, HASH_I           --> 
+ ˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜
+  Ci, X, Ni, IDi -->
+                        <--    Ci, Cr, Y, Nr, IDr, HASHr
+  Ci, Cr, HASHi         -->
+  
+```
+
+在积极模式下，前四个包合并成两个包。第三条消息由发送发发回给应答方，该消息被验证，让应答方能够确定其中的散列值是否与计算得到的散列值相同，进而确定消息是否有问题。积极模式主要供远程接入IKE客户使用。在这种情况下，应答方预先并不知道发起方的地址，切使用的验证方法是预共享密钥。 积极模式没有主模式安全，因为身份是以明文方式传输的且不能协商DH参数。
+
+#### Quick Mode
+
+* HASH(1) = prf(SKEYID_a, M-ID | SA | Ni [ | KE ] [ | IDci | IDcr )
+* HASH(2) = prf(SKEYID_a, M-ID | Ni_b | SA | Nr [ | KE ] [ | IDci | IDcr )
+* HASH(3) = prf(SKEYID_a, 0 | M-ID | Ni_b | Nr_b)
+
+```
+      Initiator                        Responder
+     -----------                      -----------
+      HDR*, HASH(1), SA, Ni
+        [, KE ] [, IDci, IDcr ] -->
+                                <--    HDR*, HASH(2), SA, Nr
+                                             [, KE ] [, IDci, IDcr ]
+      HDR*, HASH(3)             -->
+ ˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜˜
+      Ci, Cr, SAi Ni2, [IDi, IDr], HASH(1)  -->
+                                            <-- Ci, Cr, SAr, Nr2, [IDi, IDr], HASH(2)
+      Ci, Cr, HASH(3)
+      
+```
+
+
+
+
+* 第一个消息: 发送方发送ISAKMP报头和IPSec SA有效负载，IPSec有效负载包含大量传输数据的所有propsal， 发送方和应答方之间交换一个新的临时值(Ni2), 它用于生成新的密钥信息，还可能用于防范重放空寂。所有的IPsec密钥都是从SKEYIDd推导出来的，因此知道SKEYIDd的攻击者将能够推导出所有用于IPSec的当前和未来密钥，直到重新协商IKE为止。为加强对IPSec密钥的保护，使用完善安全性PFS来解除未来密钥和当前密钥的关系。启用PFS后，将交换新的DH公开值(x和y)，并使用计算得到的共享密钥K来生成密钥信息；
+
+
+	```
+	  未启用PFS时， HASH(1) = hash(SKEYIDa, Mid|SAi|Ni2)    ---From IPSec Design
+	  启用PFS时， HASH(1) = hash(SKEYIDa, Mid|SAi|Ni2|X|IDi|IDr)
+	```
+
+Message ID(Mid)很重要，因为两个对等体之间可能由多个快速模式事务，因此需要使用唯一的Message ID来区分他们。
+
+* 第二个消息：应答方发送给发起方，其中包含选定的propsal以及ISAKMP报头，临时值Nr2和HASH(2).
+
+	```
+	  未启用PFS时，HASH(2) = hash(SKEYIDa, Mid|SAr|Ni2|Nr2). ---From IPSec Design
+	  启用PFS后，HASH(2) = hash(SKEYIDa, Mid|SAr|Ni2|Nr2|Y|IDi|IDr)
+	```
+
+第三个消息：发起方使用HASH(3)进行验证，这是在传输IPSec数据流前验证通信通道的有效性。如果不验证 第三条消息，攻击者可能重放以前的快速模式事务分组，从而消耗资源。
+
+	```
+	  HASH(3) = hash(SKEYIDa, 0|Mid|Ni2|Nr2)
+	```
+
+#### IPSec分组的处理
+
+路由器或主机对分组的处理通常是个实现问题。RFC 2401描述来一种通用的实现模型；该模型描述来所有IPSec实现都必须使用两个数据库；
+  * **安全策略数据库SPD**: 存储了策略定义，它们决定了如何处理两个IPSec对等体之间的所有IP数据流；
+  * **安全关联数据库SADB**: 创建IPSec SA时，将使用该SA的所有参数更新SADB。对于入站IPSec分组，将使用外部IP头部中的目标IP地址，SPI和IPSec安全协议(ESP/AH)作为索引，在SADB中查找对应的SA条目；对于出站IPSec分组，将使用SPD中指向SADB的指针来获取响应的SA条目。
+
+##### 数据流
+  ----- Diagram: PCa----Routera----Internet----Routerb-----PCc   
+ 
+ 1. PC1将数据包发送给Routera。
+ 2. Routera的IP数据包从WAN口送出去。
+ 3. 在从WAN口送出去以前，发现该接口配置了一个加密映射，意味着要进行IPsec对该分组进行处理；
+ 4. 接下来Routera查询SPD，看是否有该分组配置的策略，即源IP地址为PCa，目标IP地址为PCc；如果有说明这个分组需要进行IPsec处理，如若没有，直接发送它。
+ 5. 下一步检查是否建立了到IPsec对等体的IKE SA和IPSec SA。如果说这是前往该目的地的第一个分组，那么SADB中没有响应的SA。所有与上述策略匹配的分组都将被加入队列或丢弃，直到建立了IPSec/IKE SA。 CiscoIOS在等待建立IKE/IPSec SA的过程中丢弃分组。
+ 6. Routera对数据包进行加密处理并发送给Routerb。
+ 7. Routerb收到数据包之后，发现该IP分组中的IPSec报头表明要对数据包进行IPSec处理；
+ 8. Routerb使用外部报头中的目标地址，即自身的IPsec IP，安全协议和报头中的SPI作为索引，在SADB中查找该分组的SA。
+ 9. 在SADB中找到匹配的SA后，使用合适的策略对分组进行验证和解密；
+ 10. 将分组解密后，对分组执行相应的五元组检查（SPD）来确保五元组的有效性；如果a. SADB中没有对应的SA，b. 序列号在滑动窗口的左边，c.没有通过验证, d. 长度不正确, e. SA寿命国旗。那么数据包将被丢弃；
